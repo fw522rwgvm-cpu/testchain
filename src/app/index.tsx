@@ -73,7 +73,7 @@ export default function TestHealthKit() {
         return;
       }
 
-      const toRead = [BODY_MASS, WORKOUT_TYPE];
+      const toRead = [BODY_MASS];
 
       const attempts: { label: string; run: () => Promise<any> }[] = [
         { label: 'tableau seul (toRead)', run: () => auth.fn(toRead) },
