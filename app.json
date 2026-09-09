@@ -37,7 +37,9 @@
       [
         "@kingstinct/react-native-healthkit",
         {
-          "NSHealthShareUsageDescription": "L'application lit votre poids et vos activités pour en suivre l'évolution."
+          "NSHealthShareUsageDescription": "L'application lit votre poids et vos activités pour en suivre l'évolution.",
+          "NSHealthUpdateUsageDescription": false,
+          "background": false
         }
       ]
     ],
