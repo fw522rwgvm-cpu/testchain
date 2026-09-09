@@ -1,0 +1,46 @@
+name: build-unsigned-ipa
+
+on: [push, workflow_dispatch]
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Installer les dépendances
+        run: npm ci
+
+      - name: Générer le projet natif iOS
+        run: npx expo prebuild --platform ios --clean
+
+      - name: Compiler sans signature
+        run: |
+          cd ios
+          SCHEME=$(ls -d *.xcworkspace | sed 's/.xcworkspace//')
+          xcodebuild \
+            -workspace "$SCHEME.xcworkspace" \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            ONLY_ACTIVE_ARCH=NO
+
+      - name: Emballer en IPA
+        run: |
+          cd ios/build/Build/Products/Release-iphoneos
+          mkdir -p Payload
+          cp -r *.app Payload/
+          zip -r "$GITHUB_WORKSPACE/app.ipa" Payload
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ipa
+          path: app.ipa
