@@ -1,8 +1,15 @@
 // app/index.tsx
 //
 // Écran de diagnostic HealthKit — Test B du runbook de faisabilité.
-// Version 2 : sonde plusieurs signatures de requestAuthorization et
-// rapporte l'erreur de chacune, au lieu de les avaler silencieusement.
+// Version 3, alignée sur @kingstinct/react-native-healthkit 14.1.0.
+//
+// Signature confirmée dans les types de la bibliothèque :
+//   requestAuthorization(toRequest: AuthDataTypes): Promise<boolean>
+//   AuthDataTypes = { toShare?: [...], toRead?: [...] }
+//
+// Les identifiants sont validés AVANT l'appel d'autorisation : un identifiant
+// invalide provoque une exception native que la bibliothèque ne rattrape pas
+// proprement, et qui se traduit par une fermeture brutale de l'application.
 
 import * as HK from '@kingstinct/react-native-healthkit';
 import { useState } from 'react';
@@ -17,8 +24,14 @@ import {
 const BODY_MASS = 'HKQuantityTypeIdentifierBodyMass';
 const WORKOUT_TYPE = 'HKWorkoutTypeIdentifier';
 
+// Mettre à false pour ne demander que le poids, si l'identifiant
+// d'entraînement ressort invalide à l'étape de validation.
+const INCLURE_ENTRAINEMENTS = true;
+
 const mod: any = HK;
 
+// Les fonctions de requête varient encore selon les versions : on les
+// résout à l'exécution. L'autorisation, elle, est appelée directement.
 function resolve(...names: string[]): { name: string; fn: Function } | null {
   for (const name of names) {
     const fn = mod?.[name] ?? mod?.default?.[name];
@@ -27,14 +40,10 @@ function resolve(...names: string[]): { name: string; fn: Function } | null {
   return null;
 }
 
-// Liste filtrée : seuls les noms utiles au diagnostic.
 function listExports(): string[] {
-  const all = [
-    ...Object.keys(mod ?? {}),
-    ...Object.keys(mod?.default ?? {}),
-  ];
+  const all = [...Object.keys(mod ?? {}), ...Object.keys(mod?.default ?? {})];
   return Array.from(new Set(all))
-    .filter((n) => /auth|workout|quantity|sample|available/i.test(n))
+    .filter((n) => /quantity|workout|sample|auth|available/i.test(n))
     .sort();
 }
 
@@ -54,7 +63,7 @@ export default function TestHealthKit() {
     setRunning(true);
 
     try {
-      // --- Étape 1 : disponibilité ----------------------------------------
+      // --- Étape 1 : disponibilité -----------------------------------------
       const avail = resolve('isHealthDataAvailable');
       if (!avail) {
         push('Module', 'isHealthDataAvailable introuvable', false);
@@ -65,68 +74,61 @@ export default function TestHealthKit() {
       push('HealthKit disponible', String(isAvailable), !!isAvailable);
       if (!isAvailable) return;
 
-      // --- Étape 2 : autorisation, par sondage ------------------------------
-      const auth = resolve('requestAuthorization');
-      if (!auth) {
-        push('Module', 'requestAuthorization introuvable', false);
-        setShowExports(true);
-        return;
-      }
+      // --- Étape 2 : validation des identifiants ----------------------------
+      const toRead = INCLURE_ENTRAINEMENTS
+        ? [BODY_MASS, WORKOUT_TYPE]
+        : [BODY_MASS];
 
-      const toRead = [BODY_MASS];
+      const check = resolve(
+        'areObjectTypesAvailableAsync',
+        'areObjectTypesAvailable',
+      );
 
-      const attempts: { label: string; run: () => Promise<any> }[] = [
-        { label: 'tableau seul (toRead)', run: () => auth.fn(toRead) },
-        { label: 'objet { toRead }', run: () => auth.fn({ toRead }) },
-        { label: 'objet { read }', run: () => auth.fn({ read: toRead }) },
-        {
-          label: 'objet { toShare: [], toRead }',
-          run: () => auth.fn({ toShare: [], toRead }),
-        },
-        {
-          label: 'objet { toRead } poids seul',
-          run: () => auth.fn({ toRead: [BODY_MASS] }),
-        },
-        { label: 'tableau poids seul', run: () => auth.fn([BODY_MASS]) },
-      ];
-
-      let authorized = false;
-
-      for (const a of attempts) {
+      if (check) {
         try {
-          const res = await a.run();
-          push(
-            'AUTORISATION OK — ' + a.label,
-            'retour : ' + JSON.stringify(res),
-            true,
-          );
-          authorized = true;
-          break;
+          const res = await check.fn(toRead);
+          for (const id of toRead) {
+            const ok = !!res?.[id];
+            push('identifiant ' + id, ok ? 'valide' : 'REFUSÉ', ok);
+          }
         } catch (e: any) {
-          push('échec — ' + a.label, e?.message ?? String(e), false);
+          push('validation identifiants', e?.message ?? String(e), false);
         }
+      } else {
+        push('validation identifiants', 'fonction indisponible', false);
       }
 
-      if (!authorized) {
-        push('Autorisation', 'aucune signature acceptée', false);
-        setShowExports(true);
-        return;
-      }
+      // --- Étape 3 : autorisation -------------------------------------------
+      // Point critique du test. Si l'entitlement avait été retiré par
+      // SideStore, l'application se fermerait ici même.
+      const granted = await HK.requestAuthorization({ toRead });
+      push('AUTORISATION', 'retour : ' + String(granted), true);
 
-      // --- Étape 3 : lecture du poids ---------------------------------------
-      const recent = resolve('getMostRecentQuantitySample');
+      // --- Étape 4 : lecture du poids ---------------------------------------
+      const recent = resolve(
+        'getMostRecentQuantitySample',
+        'queryQuantitySamples',
+      );
+
       if (!recent) {
-        push('Module', 'getMostRecentQuantitySample introuvable', false);
+        push('Module', 'aucune fonction de lecture de quantité', false);
         setShowExports(true);
       } else {
         let sample: any = null;
-        try {
-          sample = await recent.fn(BODY_MASS, 'kg');
-        } catch {
+
+        const tries = [
+          () => recent.fn(BODY_MASS, { limit: 1, unit: 'kg' }),
+          () => recent.fn(BODY_MASS, 'kg'),
+          () => recent.fn(BODY_MASS),
+        ];
+
+        for (const t of tries) {
           try {
-            sample = await recent.fn(BODY_MASS);
+            const r = await t();
+            sample = Array.isArray(r) ? r[0] : (r?.samples?.[0] ?? r);
+            if (sample) break;
           } catch (e: any) {
-            push('Lecture du poids', e?.message ?? String(e), false);
+            push('essai lecture poids', e?.message ?? String(e), false);
           }
         }
 
@@ -138,55 +140,55 @@ export default function TestHealthKit() {
           const date = sample.startDate
             ? new Date(sample.startDate).toLocaleDateString('fr-FR')
             : '?';
+
+          // Doit afficher COROS : preuve que la donnée réelle est lue.
           const src =
             sample.sourceRevision?.source?.name ??
             sample.device?.name ??
             'source inconnue';
 
-          push('Dernier poids', q + ' ' + unit + ' — ' + date, true);
+          push('DERNIER POIDS', q + ' ' + unit + ' — ' + date, true);
           push('Source de la donnée', src, true);
         }
       }
 
-      // --- Étape 4 : entraînements ------------------------------------------
-      const from = new Date();
-      from.setDate(from.getDate() - 30);
+      // --- Étape 5 : entraînements ------------------------------------------
+      if (INCLURE_ENTRAINEMENTS) {
+        const from = new Date();
+        from.setDate(from.getDate() - 30);
 
-      const wq = resolve(
-        'queryWorkoutSamples',
-        'queryWorkouts',
-        'getWorkouts',
-      );
+        const wq = resolve('queryWorkoutSamples', 'queryWorkouts');
 
-      if (!wq) {
-        push('Entraînements', 'aucune fonction de requête connue', false);
-        setShowExports(true);
-      } else {
-        let workouts: any = null;
-        const tries = [
-          () => wq.fn({ filter: { startDate: from }, limit: 100 }),
-          () => wq.fn({ from, limit: 100 }),
-          () => wq.fn({ limit: 100 }),
-          () => wq.fn(),
-        ];
+        if (!wq) {
+          push('Entraînements', 'aucune fonction de requête connue', false);
+          setShowExports(true);
+        } else {
+          let workouts: any = null;
+          const tries = [
+            () => wq.fn({ filter: { startDate: from }, limit: 100 }),
+            () => wq.fn({ limit: 100 }),
+            () => wq.fn(),
+          ];
 
-        for (const t of tries) {
-          try {
-            workouts = await t();
-            break;
-          } catch (e: any) {
-            push('essai entraînements', e?.message ?? String(e), false);
+          for (const t of tries) {
+            try {
+              workouts = await t();
+              break;
+            } catch (e: any) {
+              push('essai entraînements', e?.message ?? String(e), false);
+            }
           }
-        }
 
-        const arr = Array.isArray(workouts)
-          ? workouts
-          : (workouts?.samples ?? []);
-        push(
-          'Entraînements (via ' + wq.name + ')',
-          arr.length + ' trouvé(s)',
-          arr.length > 0,
-        );
+          const arr = Array.isArray(workouts)
+            ? workouts
+            : (workouts?.samples ?? []);
+
+          push(
+            'Entraînements (via ' + wq.name + ')',
+            arr.length + ' trouvé(s)',
+            arr.length > 0,
+          );
+        }
       }
 
       push('TEST TERMINÉ', 'aucun plantage rencontré', true);
