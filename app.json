@@ -33,6 +33,12 @@
           "image": "./assets/images/splash-icon.png",
           "imageWidth": 76
         }
+      ],
+      [
+        "@kingstinct/react-native-healthkit",
+        {
+          "NSHealthShareUsageDescription": "L'application lit votre poids et vos activités pour en suivre l'évolution."
+        }
       ]
     ],
     "experiments": {
