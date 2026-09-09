@@ -18,6 +18,15 @@ jobs:
       - name: Générer le projet natif iOS
         run: npx expo prebuild --platform ios --clean
 
+      - name: Diagnostic Info.plist et entitlements
+        run: |
+          echo "=== Fichiers entitlements trouvés ==="
+          find ios -name "*.entitlements" -exec echo "--- {} ---" \; -exec cat {} \;
+          echo "=== Clés Health de l'Info.plist ==="
+          find ios -name "Info.plist" -not -path "*/Pods/*" \
+            -exec echo "--- {} ---" \; \
+            -exec grep -A1 -i "health" {} \; || echo "AUCUNE CLE HEALTH TROUVEE"
+
       - name: Compiler sans signature
         run: |
           cd ios
